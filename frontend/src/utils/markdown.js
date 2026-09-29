@@ -66,7 +66,7 @@ function buildTimelineSection(materials) {
       if (!grouped.has(slot)) continue;
       for (const m of grouped.get(slot)) {
         const brief = (m.remark || '').replace(/\n+/g, ' ');
-        lines.push(`- **${slot}** · ${m.title}${brief && !brief.startsWith(m.title) ? ` — ${brief}` : ''}`);
+        lines.push(`- **${slot}** · ${m.title}${brief && !brief.startsWith(m.title) ? ` —— ${brief}` : ''}`);
       }
     }
     lines.push('');
@@ -121,7 +121,7 @@ function buildBriefEntry(m, index) {
   const brief = firstLine.length > 60 ? `${firstLine.slice(0, 60)}…` : firstLine;
   const dayMark = parseDayMarker(m.travelDate) || parseDayMarker(m.remark);
   const dayText = dayMark ? `（Day ${dayMark.day}）` : '';
-  return `${index}. [${typeLabel}]${dayText} ${m.title}${brief && brief !== m.title ? ` — ${brief}` : ''}`;
+  return `${index}. [${typeLabel}]${dayText} ${m.title}${brief && brief !== m.title ? ` —— ${brief}` : ''}`;
 }
 
 /**

@@ -139,7 +139,7 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
 
   if (url.origin === self.location.origin) {
-    if (url.pathname.startsWith('/api')) return; // 同源 /api 兑底跳过
+    if (url.pathname.startsWith('/api')) return; // 同源 /api 兜底跳过
     if (req.mode === 'navigate') {
       // 页面：网络优先，失败回退缓存（离线仍可打开）
       event.respondWith(

@@ -20,7 +20,7 @@ const router = createRouter({
 
 const app = createApp(App).use(router);
 
-/* ---------- 全局错误处理（兑底，避免白屏与静默失败） ---------- */
+/* ---------- 全局错误处理（兜底，避免白屏与静默失败） ---------- */
 // NaiveUI 离散 API：脱离组件上下文也能弹出与手账主题一致的提示
 const { message: globalMessage } = createDiscreteApi(['message'], {
   configProviderProps: { themeOverrides: naiveThemeOverrides },
@@ -43,7 +43,7 @@ app.config.errorHandler = (err, instance, info) => {
   showError('页面出了点小问题，请刷新重试；频繁出现请先导出备份');
 };
 
-// 未处理的 Promise 拒绝（异步操作失败兑底）
+// 未处理的 Promise 拒绝（异步操作失败兜底）
 window.addEventListener('unhandledrejection', (event) => {
   console.error('[TripSnippet] 未处理的 Promise 异常：', event.reason);
   showError('操作出了点小问题，可能没有完成，请重试');
