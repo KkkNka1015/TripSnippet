@@ -1,0 +1,21 @@
+# TripSnippet 一键本地运行：前端 8000（Nginx）+ 后端 3000（Node）
+services:
+  backend:
+    build: ./backend
+    environment:
+      PORT: 3000
+      # 允许本机前端（8000 端口）的跨域请求；改端口请同步修改
+      ALLOWED_ORIGIN: http://localhost:8000,http://127.0.0.1:8000
+    ports:
+      - '3000:3000'
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # 浏览器从宿主机直接访问后端
+        VITE_API_BASE: http://localhost:3000
+    ports:
+      - '8000:80'
+    depends_on:
+      - backend
