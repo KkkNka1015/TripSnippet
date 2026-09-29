@@ -64,7 +64,12 @@ app.use((err, req, res, next) => {
   res.status(status < 500 ? status : 200).json({ ok: false, code, message });
 });
 
-app.listen(PORT, () => {
-  console.log(`[tripsnippet-backend] listening on http://localhost:${PORT}`);
-  console.log(`[tripsnippet-backend] allowed origins: ${allowedOrigins.join(', ')}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`[tripsnippet-backend] listening on http://localhost:${PORT}`);
+    console.log(`[tripsnippet-backend] allowed origins: ${allowedOrigins.join(', ')}`);
+  });
+}
+
+// 供 Vercel Serverless 入口（api/index.js）复用；本地 npm start 仍直接监听端口
+module.exports = app;
