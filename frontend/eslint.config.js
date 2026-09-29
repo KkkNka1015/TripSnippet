@@ -31,4 +31,9 @@ export default [
     files: ['public/sw.js'],
     languageOptions: { globals: { ...globals.serviceworker } },
   },
+  {
+    // Node 构建脚本（图标生成）：使用 Node 专用全局变量
+    files: ['scripts/**/*.mjs'],
+    languageOptions: { globals: { ...globals.node } },
+  },
 ];
