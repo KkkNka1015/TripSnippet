@@ -5,7 +5,14 @@
  * 3. 失败时降级为启发式段落提取
  * 4. SPA / 登录页 / 空正文返回结构化错误码，由前端降级为手动粘贴模式
  */
-const { parseHTML } = require('linkedom');
+// linkedom 的 CJS 构建会 require 纯 ESM 的 css-select@7，在不支持 require(esm) 的
+// 运行时（如 Vercel Serverless Node）模块加载即崩；改走动态 import 的 ESM 构建，全版本兼容
+let parseHTMLPromise = null;
+function getParseHTML() {
+  parseHTMLPromise ??= import('linkedom').then((m) => m.parseHTML);
+  return parseHTMLPromise;
+}
+
 const { Readability } = require('@mozilla/readability');
 const { fetchHtml, decodeBody } = require('./fetcher');
 const { TtlCache } = require('./cache');
@@ -52,10 +59,11 @@ function imgSrcOf(img, base) {
 }
 
 /** 从一段 HTML 片段中收集可用文章配图 */
-function collectImagesFromFragment(html, base, limit = 12) {
+async function collectImagesFromFragment(html, base, limit = 12) {
   const out = [];
   const seen = new Set();
   try {
+    const parseHTML = await getParseHTML();
     const { document } = parseHTML(`<body>${html}</body>`);
     const imgs = document.querySelectorAll('img');
     for (const img of imgs) {
@@ -79,7 +87,7 @@ function collectImagesFromFragment(html, base, limit = 12) {
 }
 
 /** Readability 失败时的启发式段落提取 */
-function fallbackExtract(doc, base) {
+async function fallbackExtract(doc, base) {
   const kill = doc.querySelectorAll('script,style,noscript,nav,header,footer,aside,form,iframe');
   for (const k of kill) k.remove && k.remove();
   const paragraphs = [];
@@ -90,7 +98,8 @@ function fallbackExtract(doc, base) {
     if (paragraphs.join('').length > 20000) break;
   }
   const text = cleanText(paragraphs.join('\n\n'));
-  return { text, images: collectImagesFromFragment(doc.body ? doc.body.innerHTML : '', base) };
+  const images = await collectImagesFromFragment(doc.body ? doc.body.innerHTML : '', base);
+  return { text, images };
 }
 
 function looksLikeSpa(html) {
@@ -101,6 +110,7 @@ function looksLikeSpa(html) {
 }
 
 async function doExtract(rawUrl) {
+  const parseHTML = await getParseHTML();
   const { buffer, contentType, finalUrl } = await fetchHtml(rawUrl);
   const html = decodeBody(buffer, contentType);
   const { document: doc } = parseHTML(html);
@@ -120,7 +130,7 @@ async function doExtract(rawUrl) {
       title = cleanText(article.title) || '';
       text = cleanText(article.textContent) || '';
       if (article.content) {
-        images = collectImagesFromFragment(article.content, finalUrl);
+        images = await collectImagesFromFragment(article.content, finalUrl);
       }
     }
   } catch {
@@ -131,7 +141,7 @@ async function doExtract(rawUrl) {
   if (text.length < 80) {
     degraded = true;
     const { document: doc2 } = parseHTML(html);
-    const fb = fallbackExtract(doc2, finalUrl);
+    const fb = await fallbackExtract(doc2, finalUrl);
     text = fb.text;
     images = fb.images;
   }
