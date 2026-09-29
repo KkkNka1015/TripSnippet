@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: tripsnippet-backend
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ALLOWED_ORIGIN
+        # 替换为你的 GitHub Pages 前端地址（逗号分隔可配多个）
+        value: https://yourusername.github.io
