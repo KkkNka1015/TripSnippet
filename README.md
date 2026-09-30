@@ -5,7 +5,7 @@
 > 所有素材**仅存储在本机浏览器 IndexedDB，不上云、不上传任何用户数据**。
 
 - 在线演示：https://tripsnippet.knklab.online
-- 后端服务：（部署后填写 Render 地址）
+- 后端服务：https://tripsnippet-kanaka4.vercel.app
 
 ## 功能演示说明
 
@@ -48,10 +48,12 @@ TripSnippet/
 │  ├─ .env.production      # 线上后端地址（部署前替换）
 │  ├─ Dockerfile / nginx.conf  # 容器化构建与静态托管
 │  └─ vite.config.js        # base: './' + hash 路由，适配 GitHub Pages
-├─ backend/                 # Node Express 代理后端（兼容 Render 部署）
+├─ backend/                 # Node Express 代理后端（Vercel Serverless 部署，兼容 Render / Docker）
 │  ├─ server.js             # 入口：CORS 白名单、限流、全局异常捕获
+│  ├─ api/index.js          # Vercel Serverless 函数入口
+│  ├─ vercel.json           # Vercel 路由重写与函数配置
 │  ├─ src/                  # 正文提取 / 图片代理 / 缓存 / 安全校验
-│  ├─ render.yaml           # Render 一键部署配置
+│  ├─ render.yaml           # Render 一键部署配置（备选）
 │  └─ Dockerfile            # 容器化构建
 ├─ .github/workflows/ci.yml     # CI：前端 lint + test + build、后端依赖与语法检查
 ├─ .github/workflows/deploy.yml # CD：main 分支 push 自动构建并发布前端到 GitHub Pages
