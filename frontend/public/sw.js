@@ -4,7 +4,7 @@
  * - 同源静态资源缓存优先；跨域仅缓存 Google Fonts（后端 API 等其他跨域请求一律直连、不缓存）
  * - 页面导航网络优先（发版后及时更新），离线时回退缓存
  */
-const CACHE = 'tripsnippet-v2';
+const CACHE = 'tripsnippet-v3';
 const SHELL = ['./', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'];
 
 /**
