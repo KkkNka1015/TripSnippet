@@ -206,13 +206,16 @@ async function startPack() {
 ├─ 旅行汇总笔记.md
 ├─ images/
 └─ audio/</pre>
+        <p class="ts-caption leading-relaxed mt-1.5">
+          解压后请保持笔记与 images/、audio/ 在同一文件夹内再打开；单独移动 .md 文件会导致图片无法显示。推荐用 Typora、Obsidian、VS Code 预览等阅读器查看。
+        </p>
       </div>
       <div v-else class="mb-4 ts-preview-box p-3">
         <p class="ts-caption flex items-center gap-1.5 mb-1.5">
           <FileText class="w-3.5 h-3.5" />单文件说明
         </p>
         <p class="ts-caption leading-relaxed">
-          生成单一 .md 文件，图片以 base64 内嵌、任何 Markdown 阅读器可直接查看；音频素材不包含，需 ZIP 格式导出获取。
+          生成单一 .md 文件，图片以 base64 内嵌、无需其他文件即可携带；推荐用 Typora、Obsidian、VS Code 预览等阅读器打开查看图片（记事本仅显示编码，非文件损坏）。音频素材不包含，需 ZIP 格式导出获取。
         </p>
       </div>
 

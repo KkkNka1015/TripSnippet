@@ -167,7 +167,9 @@ export function generateTravelNote({ project, materials, noteMode = 'full', imag
       ? [
           '## 使用说明',
           '',
-          '- 本笔记为单文件版本，图片已内嵌，可直接在任何 Markdown 阅读器打开',
+          '- 本笔记为单文件版本，图片以 base64 编码内嵌在文件内（无需其他文件即可携带）',
+          '- 推荐用 Typora、Obsidian、VS Code（预览模式）等现代阅读器打开，图片即可正常显示',
+          '- Windows 记事本等纯文本编辑器打开只会看到一串编码，这是图片的正常存储形式，并非文件损坏',
           '- 含音频素材时请使用「ZIP 素材包」格式导出获取音频文件',
           '- 本笔记序号即素材在 TripSnippet 中的排序，可拖拽调整后重新导出',
           '- 所有素材仅供个人学习与旅行规划使用，请遵守原网站版权协议，禁止商用',
@@ -176,8 +178,10 @@ export function generateTravelNote({ project, materials, noteMode = 'full', imag
       : [
           '## 使用说明',
           '',
+          '- 请先完整解压压缩包，保持本笔记与 `images/`、`audio/` 目录在同一文件夹内，再打开笔记',
+          '- 笔记通过相对路径引用图片，单独移动或转发 .md 文件会导致图片无法显示',
+          '- 推荐用 Typora、Obsidian、VS Code（预览模式）等阅读器打开查看',
           '- 本笔记序号即素材在 TripSnippet 中的排序，可拖拽调整后重新导出',
-          '- 图片位于 `images/`，音频位于 `audio/` 目录',
           '- 所有素材仅供个人学习与旅行规划使用，请遵守原网站版权协议，禁止商用',
           '',
         ];
