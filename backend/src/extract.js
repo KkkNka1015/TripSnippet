@@ -112,6 +112,11 @@ function collectMeta(doc) {
     ogSiteName: get('meta[property="og:site_name"]') || get('meta[name="og:site_name"]'),
     ogImage: get('meta[property="og:image"]') || get('meta[name="og:image"]'),
     description: get('meta[name="description"]') || get('meta[property="og:description"]'),
+    author: get('meta[name="author"]') || get('meta[property="article:author"]'),
+    publishedTime:
+      get('meta[property="article:published_time"]') ||
+      get('meta[name="pubdate"]') ||
+      get('meta[itemprop="datePublished"]'),
   };
 }
 
@@ -185,6 +190,108 @@ async function fallbackExtract(doc, base) {
   return { text, images };
 }
 
+/**
+ * SPA 兜底：从页面内嵌 JSON 中捞正文与图片
+ * 依次尝试 JSON-LD（articleBody）→ __NEXT_DATA__ → __NUXT__；
+ * 图片不足时用正则从整页收集（先还原 JSON 常见的 \/ 转义）。
+ */
+function tryEmbeddedJson(html) {
+  const out = { title: '', text: '', images: [], author: '', publishedAt: '' };
+
+  // 1) JSON-LD 结构化数据
+  const ldBlocks = html.match(/<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi) || [];
+  for (const block of ldBlocks) {
+    const raw = block.replace(/<\/?script[^>]*>/gi, '').trim();
+    if (!raw) continue;
+    try {
+      const json = JSON.parse(raw);
+      const nodes = Array.isArray(json) ? json : [json, ...(json['@graph'] || [])];
+      for (const node of nodes) {
+        if (!node || typeof node !== 'object') continue;
+        const body = typeof node.articleBody === 'string' ? node.articleBody : '';
+        if (!out.text && body.length >= 80) {
+          out.text = cleanText(body);
+          out.title = cleanText(String(node.headline || node.name || ''));
+          const a = node.author;
+          out.author = cleanText(
+            String(typeof a === 'string' ? a : a?.name || (Array.isArray(a) ? a[0]?.name : '') || '')
+          );
+          out.publishedAt = String(node.datePublished || '');
+        }
+        const imgs = Array.isArray(node.image) ? node.image : [node.image];
+        for (const im of imgs) {
+          const u = typeof im === 'string' ? im : im?.url;
+          if (typeof u === 'string' && /^https?:/i.test(u) && out.images.length < 8 && !out.images.includes(u)) {
+            out.images.push(u);
+          }
+        }
+      }
+    } catch {
+      /* 非法 JSON 跳过 */
+    }
+  }
+
+  // 2) __NEXT_DATA__（Next.js 预取数据树）
+  if (out.text.length < 80) {
+    const m = /<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i.exec(html);
+    if (m) {
+      try {
+        const props = JSON.parse(m[1])?.props?.pageProps || {};
+        const body = [props.article?.content, props.post?.content, props.content].find(
+          (s) => typeof s === 'string' && s.length >= 80
+        );
+        if (body) {
+          out.text = cleanText(body.replace(/<[^>]+>/g, ' '));
+          out.title = cleanText(String(props.article?.title || props.post?.title || ''));
+        }
+      } catch {
+        /* 跳过 */
+      }
+    }
+  }
+
+  // 3) __NUXT__（Nuxt 2 注入为普通 JS，宽松取最长的字符串字面量当正文）
+  if (out.text.length < 80) {
+    const m = /window\.__NUXT__\s*=\s*([\s\S]{200,}?);\s*<\/script>/i.exec(html);
+    if (m) {
+      const strings = m[1].match(/"(?:[^"\\]|\\.){120,}"/g) || [];
+      const best = strings.sort((a, b) => b.length - a.length)[0];
+      if (best) {
+        const text = cleanText(
+          best
+            .slice(1, -1)
+            .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+            .replace(/\\"/g, '"')
+            .replace(/\\n/g, '\n')
+            .replace(/\\\//g, '/')
+            .replace(/<[^>]+>/g, ' ')
+        );
+        if (text.length >= 80) out.text = text;
+      }
+    }
+  }
+
+  // 4) 图片兜底：整页正则捞图片 URL
+  if (out.images.length < 3) {
+    const flat = html.replace(/\\\//g, '/');
+    const urls = flat.match(/https?:\/\/[^\s"'<>\\]+?\.(?:jpe?g|png|webp|gif)(?:\?[^\s"'<>\\]*)?/gi) || [];
+    const seen = new Set();
+    for (const u of urls) {
+      try {
+        const abs = new URL(u).href;
+        if (seen.has(abs)) continue;
+        seen.add(abs);
+        out.images.push(abs);
+        if (out.images.length >= 8) break;
+      } catch {
+        /* 跳过非法 URL */
+      }
+    }
+  }
+
+  return out;
+}
+
 function looksLikeSpa(html) {
   return (
     /id=["']?(app|root|__nuxt|__next)["']/i.test(html) ||
@@ -205,6 +312,8 @@ async function doExtract(rawUrl) {
   let text = '';
   let images = [];
   let degraded = false;
+  let author = meta.author || '';
+  let publishedAt = meta.publishedTime || '';
 
   // 0) 站点适配器直取（微信/知乎/马蜂窝等结构化站点成功率高于 Readability）
   const adapted = trySiteAdapter(doc, finalUrl);
@@ -239,7 +348,20 @@ async function doExtract(rawUrl) {
     images = fb.images;
   }
 
-  // 3) 仍然没有正文 → SPA / 动态渲染页面，交给前端降级为手动粘贴
+  // 3) 仍无正文 → 尝试页面内嵌 JSON（SPA 常把文章数据放在 script 标签里）
+  if (text.length < 80) {
+    const embedded = tryEmbeddedJson(html);
+    if (embedded.text.length >= 80) {
+      degraded = true;
+      text = embedded.text;
+      title = title || embedded.title;
+      images = images.length ? images : embedded.images;
+      author = author || embedded.author;
+      publishedAt = publishedAt || embedded.publishedAt;
+    }
+  }
+
+  // 4) 仍然没有正文 → SPA / 动态渲染页面，交给前端降级为手动粘贴
   if (text.length < 80) {
     if (looksLikeSpa(html)) {
       throw new SafeError('SPA_OR_EMPTY', '该网页由前端脚本动态渲染，暂不支持自动解析，请改用剪贴板粘贴导入', 200);
@@ -272,6 +394,8 @@ async function doExtract(rawUrl) {
       url: finalUrl,
       originalUrl: rawUrl,
       degraded,
+      author: author.slice(0, 80),
+      publishedAt: publishedAt.slice(0, 40),
       fetchedAt: Date.now(),
     },
   };
@@ -295,4 +419,4 @@ async function extractRoute(req, res, next) {
   }
 }
 
-module.exports = { extractRoute, trySiteAdapter, bestSrcFromSrcset, collectImagesFromFragment };
+module.exports = { extractRoute, trySiteAdapter, bestSrcFromSrcset, collectImagesFromFragment, tryEmbeddedJson };

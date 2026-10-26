@@ -5,9 +5,9 @@
  * - 批量模式：全选 / 删除 / 移动项目 / 加标签 / 打包选中
  * - 导入、打包、备份、项目设置
  */
-import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, h } from 'vue';
+import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount, h } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { NModal, NSelect, NDropdown, useMessage } from 'naive-ui';
+import { NModal, NSelect, NDropdown, useMessage, useDialog } from 'naive-ui';
 import {
   ArrowLeft, Compass, Plus, Archive, CheckSquare, MoreHorizontal, Pencil,
   Download, Trash2, Inbox, Tags, X, Check, FolderInput, Upload,
@@ -15,8 +15,9 @@ import {
 import {
   store, loadProjects, loadTags, openProject, reorderMaterials, deleteMaterials,
   moveMaterials, appendTagsToMaterials, deleteProject, addMaterials, materialStats,
-  snapshotMaterials, snapshotProject, restoreMaterials, restoreProject,
+  snapshotMaterials, snapshotProject, restoreMaterials, restoreProject, backfillThumbs,
 } from '../store';
+import { splitDuplicates } from '../utils/dedupe';
 import { formatDate, formatSize } from '../utils/format';
 import { compressImage, makeThumb, validateFile } from '../utils/image';
 import { exportProjectBackup } from '../utils/backup';
@@ -34,6 +35,7 @@ import ProjectCreateModal from '../components/ProjectCreateModal.vue';
 const route = useRoute();
 const router = useRouter();
 const message = useMessage();
+const dialog = useDialog();
 
 /* ---------- 弹窗状态 ---------- */
 const showImport = ref(false);
@@ -111,6 +113,33 @@ function clearFilter() {
   filterType.value = 'all';
   filterTag.value = null;
 }
+
+/* ---------- 分批渲染（虚拟滚动）：大项目先渲染一批，滚动到底自动加载 ---------- */
+const PAGE_SIZE = 60;
+const renderLimit = ref(PAGE_SIZE);
+const renderedMaterials = computed(() => visibleMaterials.value.slice(0, renderLimit.value));
+const hasMoreToRender = computed(() => visibleMaterials.value.length > renderedMaterials.value.length);
+
+const listSentinel = ref(null);
+let sentinelObserver = null;
+
+function watchSentinel() {
+  sentinelObserver?.disconnect();
+  sentinelObserver = null;
+  if (!listSentinel.value || !hasMoreToRender.value) return;
+  sentinelObserver = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((e) => e.isIntersecting)) renderLimit.value += PAGE_SIZE;
+    },
+    { rootMargin: '600px 0px' } // 提前 600px 预加载，滚动无感
+  );
+  sentinelObserver.observe(listSentinel.value);
+}
+
+watch(hasMoreToRender, () => nextTick(watchSentinel));
+watch([filterType, filterTag], () => {
+  renderLimit.value = PAGE_SIZE;
+});
 
 /* 全选作用于当前可见集合（筛选时只勾选可见素材） */
 const allSelected = computed(() => {
@@ -287,9 +316,26 @@ async function importDroppedFiles(files) {
       message.error(`未能导入：${failed[0] || '文件读取失败'}`);
       return;
     }
-    await addMaterials(records);
-    if (failed.length) message.warning(`已导入 ${records.length} 个文件，${failed.length} 个被拦截：${failed[0]}`);
-    else message.success(`已导入 ${records.length} 个文件`);
+    const { unique, dups } = await splitDuplicates(records, store.materials);
+    const finish = async (list, skipped = 0) => {
+      if (!list.length) {
+        message.info('文件与已有素材重复，未导入');
+        return;
+      }
+      await addMaterials(list);
+      const dupNote = skipped ? `，跳过 ${skipped} 个重复` : '';
+      if (failed.length) message.warning(`已导入 ${list.length} 个文件${dupNote}，${failed.length} 个被拦截：${failed[0]}`);
+      else message.success(`已导入 ${list.length} 个文件${dupNote}`);
+    };
+    if (!dups.length) return finish(unique);
+    dialog.warning({
+      title: `发现 ${dups.length} 个疑似重复文件`,
+      content: `「${dups.slice(0, 3).map((d) => d.title || '未命名').join('」「')}」${dups.length > 3 ? `等 ${dups.length} 个` : ''}与当前项目已有素材内容相同。`,
+      positiveText: unique.length ? `只导入新的 ${unique.length} 个` : '不导入了',
+      negativeText: '仍然全部导入',
+      onPositiveClick: () => finish(unique, dups.length),
+      onNegativeClick: () => finish(records),
+    });
   } catch (err) {
     message.error(err.message || '导入失败');
   }
@@ -306,6 +352,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('dragleave', onWinDragLeave);
   window.removeEventListener('drop', onWinDrop);
   window.removeEventListener('keydown', onGlobalKeydown);
+  sentinelObserver?.disconnect();
 });
 
 /* ---------- 批量移动 ---------- */
@@ -386,7 +433,11 @@ async function refresh() {
     router.replace('/');
     return;
   }
+  renderLimit.value = PAGE_SIZE; // 重进 / 切换项目时分页从头开始
   store.materials.forEach((m, i) => (seqMap[m.id] = i + 1));
+  // 空闲时段补齐老素材缺失的缩略图（无缺失时开销接近零，静默执行）
+  if ('requestIdleCallback' in window) window.requestIdleCallback(() => backfillThumbs(), { timeout: 4000 });
+  else setTimeout(() => backfillThumbs(), 1200);
   // 支持 ?m=<id> 直达素材弹窗
   const qm = Number(route.query.m);
   if (qm) {
@@ -540,7 +591,7 @@ function goHome() {
 
         <div v-if="visibleMaterials.length" class="space-y-0.5">
           <MaterialRow
-            v-for="(m, i) in visibleMaterials"
+            v-for="(m, i) in renderedMaterials"
             :key="m.id"
             :material="m"
             :seq="seqMap[m.id] || 0"
@@ -551,7 +602,7 @@ function goHome() {
             :dragging="dragId === m.id"
             :drop-target="overId === m.id"
             :is-first="i === 0"
-            :is-last="i === visibleMaterials.length - 1"
+            :is-last="i === renderedMaterials.length - 1"
             @open="openMaterial"
             @edit="openMaterial"
             @view="openViewer"
@@ -564,6 +615,11 @@ function goHome() {
             @move-up="(m) => moveStep(m, -1)"
             @move-down="(m) => moveStep(m, 1)"
           />
+
+          <!-- 分批加载哨兵：滚动到底部自动加载下一批 -->
+          <div v-if="hasMoreToRender" ref="listSentinel" class="ts-caption text-center py-4 select-none">
+            已显示 {{ renderedMaterials.length }} / {{ visibleMaterials.length }} 条，下滑继续加载
+          </div>
         </div>
 
         <!-- 筛选无结果 -->

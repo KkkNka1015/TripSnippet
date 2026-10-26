@@ -3,7 +3,9 @@
  * 负责项目 / 素材 / 标签池的内存状态与 IndexedDB 同步
  */
 import { reactive, computed, toRaw } from 'vue';
+import { makeThumb } from '../utils/image';
 import {
+  db,
   dbListProjects,
   dbCreateProject,
   dbUpdateProject,
@@ -177,6 +179,7 @@ export async function addMaterials(items) {
     travelDate: it.travelDate || '',
     createTime: Date.now(),
     sourceType: it.sourceType || 'manual',
+    contentHash: it.contentHash || null,
     order: order++,
   }));
   const ids = await dbAddMaterials(records);
@@ -228,6 +231,31 @@ export async function appendTagsToMaterials(ids, tagNames) {
   }
   await dbAddTagsSafe(tagNames);
   if (store.currentProject) await openProject(store.currentProject.id);
+}
+
+/* ==================== 缩略图回填 ====================
+ * 早期版本导入的图片没有 thumb，打开项目后在空闲时段逐个补齐
+ * （由 ProjectView 调度，无缺失时开销接近零；静默执行不阻塞交互）
+ */
+let thumbBackfillRunning = false;
+
+export async function backfillThumbs() {
+  if (thumbBackfillRunning) return;
+  const targets = store.materials.filter((m) => m.type === 'image' && m.blob && !m.thumb);
+  if (!targets.length) return;
+  thumbBackfillRunning = true;
+  try {
+    for (const m of targets) {
+      const t = await makeThumb(m.blob);
+      if (!t) continue;
+      await db.materials.update(m.id, { thumb: t });
+      m.thumb = t;
+    }
+  } catch {
+    /* 单个失败忽略 */
+  } finally {
+    thumbBackfillRunning = false;
+  }
 }
 
 /* ==================== 标签池 ==================== */

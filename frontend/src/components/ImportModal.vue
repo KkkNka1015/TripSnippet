@@ -7,7 +7,7 @@
  * 4. 在线录音：MediaRecorder 录制（webm 格式，浏览器可直连播放）
  */
 import { ref, reactive, computed, watch, onBeforeUnmount } from 'vue';
-import { NModal, useMessage } from 'naive-ui';
+import { NModal, useMessage, useDialog } from 'naive-ui';
 import {
   X, Check, Link2, ClipboardPaste, FolderOpen, Search, Loader2, CircleCheck,
   Trash2, ImageOff, FileText, Music, Info, TriangleAlert,
@@ -16,6 +16,7 @@ import {
 import { addMaterials, getSetting, setSetting } from '../store';
 import { apiExtract, apiFetchImage, ApiError } from '../utils/api';
 import { compressImage, makeThumb, validateFile, FILE_RULES } from '../utils/image';
+import { splitDuplicates } from '../utils/dedupe';
 import { formatSize, formatDate } from '../utils/format';
 import { store } from '../store';
 import CopyrightNotice from './CopyrightNotice.vue';
@@ -24,6 +25,7 @@ const props = defineProps({ show: Boolean, initialTab: { type: String, default: 
 const emit = defineEmits(['update:show', 'imported']);
 
 const message = useMessage();
+const dialog = useDialog();
 
 /* ============ 通用状态 ============ */
 const tab = ref('url'); // url | clipboard | file
@@ -72,6 +74,8 @@ const urlDraft = reactive({
   siteName: '',
   text: '',
   url: '',
+  author: '', // 页面声明的作者（可选）
+  publishedAt: '', // 页面声明的发布时间（可选）
   images: [], // { blob, url, failed, reason }
 });
 const importMode = ref('both'); // text | both
@@ -132,6 +136,8 @@ async function doParse(url) {
     urlDraft.siteName = data.siteName;
     urlDraft.text = data.text;
     urlDraft.url = data.url;
+    urlDraft.author = data.author || '';
+    urlDraft.publishedAt = data.publishedAt || '';
     urlDraft.degraded = data.degraded;
     stageIndex.value = 2;
     // 阶段 3：提取图片（逐张经代理下载，容忍单张失败）
@@ -173,21 +179,56 @@ function removeDraftImage(idx) {
   urlDraft.images.splice(idx, 1);
 }
 
+/** 备注自动补全：有作者 / 发布时间时生成一行来源说明（入库后可再编辑） */
+function buildUrlRemark() {
+  const parts = [];
+  if (urlDraft.author) parts.push(`摘自 ${urlDraft.author}`);
+  if (urlDraft.publishedAt) parts.push(`发布于 ${urlDraft.publishedAt.slice(0, 10)}`);
+  return parts.length ? `—— ${parts.join(' · ')}` : '';
+}
+
+/**
+ * 去重确认后入库：与当前项目已有素材比对，
+ * 命中重复时弹窗让用户选择「只导入新的」或「仍然全部导入」
+ */
+async function importAfterDedupe(items, resetFn) {
+  const { unique, dups } = await splitDuplicates(items, store.materials);
+  const doAdd = async (list, skipped = 0) => {
+    if (!list.length) {
+      message.info('内容与已有素材重复，未导入新素材');
+      return;
+    }
+    await addMaterials(list);
+    message.success(skipped ? `已导入 ${list.length} 条素材，跳过 ${skipped} 条重复` : `已导入 ${list.length} 条素材`);
+    emit('imported');
+    resetFn();
+    close();
+  };
+  if (!dups.length) return doAdd(unique);
+  dialog.warning({
+    title: `发现 ${dups.length} 条疑似重复素材`,
+    content: `「${dups.slice(0, 3).map((d) => d.title || '未命名素材').join('」「')}」${dups.length > 3 ? `等 ${dups.length} 条` : ''}与当前项目已有素材内容相同。`,
+    positiveText: unique.length ? `只导入新的 ${unique.length} 条` : '不导入了',
+    negativeText: '仍然全部导入',
+    onPositiveClick: () => doAdd(unique, dups.length),
+    onNegativeClick: () => doAdd(items),
+  });
+}
+
 async function confirmUrlImport() {
   if (importing.value) return;
   importing.value = true;
   try {
     const items = [];
-    if (urlDraft.text.trim() || importMode.value === 'text') {
-      if (urlDraft.text.trim()) {
-        items.push({
-          type: 'text',
-          title: urlDraft.title || '网页素材',
-          content: urlDraft.text,
-          sourceUrl: urlDraft.url,
-          sourceType: 'url',
-        });
-      }
+    if (urlDraft.text.trim()) {
+      items.push({
+        type: 'text',
+        title: urlDraft.title || '网页素材',
+        content: urlDraft.text,
+        sourceUrl: urlDraft.url,
+        remark: buildUrlRemark(),
+        sourceType: 'url',
+      });
     }
     if (importMode.value === 'both') {
       const okImages = urlDraft.images.filter((i) => !i.failed && i.blob && i.checked);
@@ -211,11 +252,7 @@ async function confirmUrlImport() {
       message.warning('没有可导入的内容');
       return;
     }
-    await addMaterials(items);
-    message.success(`已导入 ${items.length} 条素材`);
-    emit('imported');
-    resetUrlDraft();
-    close();
+    await importAfterDedupe(items, resetUrlDraft);
   } catch (e) {
     message.error(e.message || '导入失败');
   } finally {
@@ -229,6 +266,8 @@ function resetUrlDraft() {
   urlDraft.title = '';
   urlDraft.text = '';
   urlDraft.url = '';
+  urlDraft.author = '';
+  urlDraft.publishedAt = '';
   urlInput.value = '';
   stageIndex.value = -1;
   parseError.value = '';
@@ -367,11 +406,7 @@ async function confirmClipImport() {
         sourceType: 'clipboard',
       });
     }
-    await addMaterials(items);
-    message.success(`已导入 ${items.length} 条素材`);
-    emit('imported');
-    resetClipDraft();
-    close();
+    await importAfterDedupe(items, resetClipDraft);
   } catch (e) {
     message.error(e.message || '导入失败');
   } finally {
@@ -468,11 +503,7 @@ async function confirmFileImport() {
           sourceType: 'file',
         };
       });
-    await addMaterials(items);
-    message.success(`已导入 ${items.length} 条素材`);
-    emit('imported');
-    resetFileDraft();
-    close();
+    await importAfterDedupe(items, resetFileDraft);
   } catch (e) {
     message.error(e.message || '导入失败');
   } finally {
@@ -717,10 +748,16 @@ onBeforeUnmount(() => {
               />
               <div class="flex-1 min-w-0">
                 <input v-model="urlDraft.title" class="modal-input mb-1.5" maxlength="60" placeholder="素材标题" />
-                <p class="ts-caption flex items-center gap-1.5">
+                <p class="ts-caption flex items-center gap-1.5 flex-wrap">
                   <Link2 class="w-3 h-3" />{{ urlDraft.siteName }}
                   <span class="opacity-40">·</span>
                   <span>{{ urlDraft.images.length }} 张配图</span>
+                  <template v-if="urlDraft.author">
+                    <span class="opacity-40">·</span><span>{{ urlDraft.author }}</span>
+                  </template>
+                  <template v-if="urlDraft.publishedAt">
+                    <span class="opacity-40">·</span><span>{{ urlDraft.publishedAt.slice(0, 10) }}</span>
+                  </template>
                 </p>
                 <span class="ts-type-badge mt-2">
                   <FileText class="w-3 h-3" /> 攻略 · 自动识别
