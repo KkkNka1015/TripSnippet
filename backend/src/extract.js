@@ -25,6 +25,74 @@ const BAD_IMG_CLASS = /(avatar|logo|icon|emoji|sprite|qrcode|wechat|weixin|ad[-_
 const BAD_IMG_ALT = /(头像|logo|图标|表情|二维码|广告|logo)/i;
 const IMG_EXT = /\.(jpe?g|png|webp|gif)(\?|#|$)/i;
 
+/**
+ * 站点适配器：旅行内容高频来源的正文选择器规则表。
+ * 命中后优先用选择器直取（成功率高于 Readability），未命中或正文过短再走通用链路。
+ * test 使用 (^|\.) 前缀匹配，防止恶意域名（如 evil-mp.weixin.qq.com）绕过。
+ */
+const SITE_ADAPTERS = [
+  { test: /(^|\.)mp\.weixin\.qq\.com$/i, content: ['#js_content', '.rich_media_content'], title: ['#activity-name', '.rich_media_title'] },
+  { test: /(^|\.)zhihu\.com$/i, content: ['.Post-RichTextContainer', '.RichContent-inner', '.QuestionRichText'], title: ['h1.Post-Title', 'h1.QuestionHeader-title'] },
+  { test: /(^|\.)mafengwo\.cn$/i, content: ['#_j_note_content', '._j_content_box', '.js-content'], title: ['.headtext', 'h1'] },
+  { test: /(^|\.)ctrip\.com$/i, content: ['.ctd_content', '.main_content', '#content'], title: ['.ctd_title', '.title'] },
+  { test: /(^|\.)qyer\.com$/i, content: ['.plc-content', '.post-content'], title: ['h1'] },
+  { test: /(^|\.)bilibili\.com$/i, content: ['.article-content', '.opus-modules'], title: ['.article-title', 'h1'] },
+  { test: /(^|\.)douban\.com$/i, content: ['.topic-content', '#link-report', '.article .content'], title: ['h1'] },
+  { test: /(^|\.)xiaohongshu\.com$/i, content: ['#detail-desc', '.note-content'], title: ['#detail-title', '.title'] },
+];
+
+/**
+ * 站点适配器提取：命中域名且正文足够长时返回 { text, html, title }
+ * 导出以便单测。
+ */
+function trySiteAdapter(doc, finalUrl) {
+  let host = '';
+  try {
+    host = new URL(finalUrl).hostname;
+  } catch {
+    return null;
+  }
+  const adapter = SITE_ADAPTERS.find((a) => a.test.test(host));
+  if (!adapter) return null;
+  for (const sel of adapter.content) {
+    const el = doc.querySelector(sel);
+    if (!el) continue;
+    const text = cleanText(el.textContent || '');
+    if (text.length < 80) continue;
+    const titleEl = adapter.title.map((s) => doc.querySelector(s)).find(Boolean);
+    return {
+      text,
+      html: el.innerHTML || '',
+      title: cleanText(titleEl?.textContent || ''),
+      site: adapter.test.source.replace(/^\^\(\|\\\.\)/, '').replace(/\$$/, ''),
+    };
+  }
+  return null;
+}
+
+/** 从 srcset 中挑选分辨率最高（x 系数最大 / w 宽度最大）的候选 URL */
+function bestSrcFromSrcset(srcset) {
+  if (!srcset) return null;
+  let best = null;
+  let bestScore = -1;
+  for (const part of String(srcset).split(',')) {
+    const seg = part.trim();
+    if (!seg) continue;
+    const [url, desc = ''] = seg.split(/\s+/);
+    if (!url) continue;
+    let score = 1;
+    const x = /^(\d+(?:\.\d+)?)x$/i.exec(desc);
+    const w = /^(\d+)w$/i.exec(desc);
+    if (x) score = parseFloat(x[1]);
+    else if (w) score = parseInt(w[1], 10) / 1000;
+    if (score > bestScore) {
+      bestScore = score;
+      best = url;
+    }
+  }
+  return best;
+}
+
 function absolutize(src, base) {
   try {
     return new URL(src, base).href;
@@ -48,9 +116,24 @@ function collectMeta(doc) {
 }
 
 function imgSrcOf(img, base) {
-  const candidates =
-    [img.getAttribute?.('src'), img.getAttribute?.('data-src'), img.getAttribute?.('data-original'), img.getAttribute?.('data-lazy-src'), img.getAttribute?.('data-actualsrc')]
-      .filter(Boolean);
+  // 优先级：srcset 最优候选（高分辨率屏实际渲染图）→ 懒加载 data-* → src（常为占位小图）
+  const candidates = [];
+  const ssBest = bestSrcFromSrcset(img.getAttribute?.('srcset'));
+  if (ssBest) candidates.push(ssBest);
+  for (const attr of ['data-src', 'data-original', 'data-lazy-src', 'data-actualsrc']) {
+    const v = img.getAttribute?.(attr);
+    if (v) candidates.push(v);
+  }
+  const picture = img.closest?.('picture');
+  if (picture) {
+    for (const source of picture.querySelectorAll('source')) {
+      const b = bestSrcFromSrcset(source.getAttribute?.('srcset'));
+      if (b) candidates.push(b);
+    }
+  }
+  const src = img.getAttribute?.('src');
+  if (src) candidates.push(src);
+
   for (const c of candidates) {
     const abs = absolutize(c, base);
     if (abs && /^https?:/i.test(abs)) return abs;
@@ -123,21 +206,31 @@ async function doExtract(rawUrl) {
   let images = [];
   let degraded = false;
 
-  // 1) Readability 精提取
-  try {
-    const article = new Readability(doc).parse();
-    if (article) {
-      title = cleanText(article.title) || '';
-      text = cleanText(article.textContent) || '';
-      if (article.content) {
-        images = await collectImagesFromFragment(article.content, finalUrl);
-      }
-    }
-  } catch {
-    /* 走降级 */
+  // 0) 站点适配器直取（微信/知乎/马蜂窝等结构化站点成功率高于 Readability）
+  const adapted = trySiteAdapter(doc, finalUrl);
+  if (adapted) {
+    text = adapted.text;
+    title = adapted.title;
+    images = await collectImagesFromFragment(adapted.html, finalUrl);
   }
 
-  // 2) 正文太短 → 降级启发式提取（可能是 Readability 兼容问题）
+  // 1) Readability 精提取（适配器未命中或正文过短时仍走通用链路）
+  if (text.length < 80) {
+    try {
+      const article = new Readability(doc).parse();
+      if (article) {
+        title = cleanText(article.title) || '';
+        text = cleanText(article.textContent) || '';
+        if (article.content) {
+          images = await collectImagesFromFragment(article.content, finalUrl);
+        }
+      }
+    } catch {
+      /* 走降级 */
+    }
+  }
+
+  // 2) 正文仍太短 → 降级启发式提取（可能是 Readability 兼容问题）
   if (text.length < 80) {
     degraded = true;
     const { document: doc2 } = parseHTML(html);
@@ -194,10 +287,12 @@ async function extractRoute(req, res, next) {
     const rawUrl = String(req.query.url || '').trim();
     if (!rawUrl) throw new SafeError('INVALID_URL', '缺少 url 参数');
     const result = await extractArticle(rawUrl);
+    // 公开网页正文不涉及用户隐私，交给 CDN 边缘缓存共享，降低重复解析开销
+    res.set('Cache-Control', 'public, s-maxage=300, stale-while-revalidate=60');
     res.json(result);
   } catch (e) {
     next(e);
   }
 }
 
-module.exports = { extractRoute };
+module.exports = { extractRoute, trySiteAdapter, bestSrcFromSrcset, collectImagesFromFragment };
