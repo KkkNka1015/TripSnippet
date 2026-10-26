@@ -1,7 +1,7 @@
 <script setup>
 /**
  * 打包导出弹窗
- * - 导出格式：ZIP 素材包 / 单文件 Markdown（图片 base64 内嵌，无音频）
+ * - 导出格式：ZIP 素材包 / 单文件 Markdown（图片内嵌，无音频）/ 单文件 HTML（图片音频全内嵌）
  * - 范围：全部素材 / 仅勾选素材
  * - 图片：原图 / 压缩图；笔记：完整版 / 精简版
  * - 导出前大小统计 + 超大包提示；打包进度条
@@ -10,7 +10,7 @@
 import { ref, reactive, computed, watch } from 'vue';
 import { NModal, useMessage } from 'naive-ui';
 import { X, Archive, Loader2, TriangleAlert, FileText, Image as ImageIcon, BookOpen } from 'lucide-vue-next';
-import { packAndDownload, exportSingleMarkdown, packSizeInfo } from '../utils/packer';
+import { packAndDownload, exportSingleMarkdown, exportSingleHtml, packSizeInfo } from '../utils/packer';
 import { formatSize } from '../utils/format';
 
 const props = defineProps({
@@ -28,7 +28,7 @@ const emit = defineEmits(['update:show', 'packed']);
 const message = useMessage();
 
 const form = reactive({
-  exportMode: 'zip', // zip | md
+  exportMode: 'zip', // zip | md | html
   range: 'all', // all | selected
   imageMode: 'original', // original | compressed
   noteMode: 'full', // full | brief
@@ -63,12 +63,12 @@ const stats = computed(() => {
     audio: targetMaterials.value.filter((m) => m.type === 'audio').length,
   };
   const { bytes, tooBig, threshold } = packSizeInfo(targetMaterials.value, form.imageMode);
-  // 单文件 MD：图片 base64 内嵌，体积约膨胀 1/3
-  const mdBytes = Math.round(bytes * 1.33);
+  // 单文件导出：内嵌内容 base64 编码，体积约膨胀 1/3（HTML 另含模板略高）
+  const inlineBytes = Math.round(bytes * (form.exportMode === 'html' ? 1.37 : 1.33));
   return {
     counts,
-    bytes: form.exportMode === 'md' ? mdBytes : bytes,
-    tooBig: form.exportMode === 'md' ? mdBytes > threshold : tooBig,
+    bytes: form.exportMode === 'zip' ? bytes : inlineBytes,
+    tooBig: form.exportMode === 'zip' ? tooBig : inlineBytes > threshold,
   };
 });
 
@@ -96,7 +96,11 @@ async function startPack() {
       },
     };
     const size =
-      form.exportMode === 'md' ? await exportSingleMarkdown(opts) : await packAndDownload(opts);
+      form.exportMode === 'md'
+        ? await exportSingleMarkdown(opts)
+        : form.exportMode === 'html'
+          ? await exportSingleHtml(opts)
+          : await packAndDownload(opts);
     message.success(`导出完成，共 ${formatSize(size)}`);
     emit('packed');
     emit('update:show', false);
@@ -134,6 +138,10 @@ async function startPack() {
           <label class="ts-option-row">
             <input v-model="form.exportMode" type="radio" value="md" class="modal-radio" />
             <span class="ts-body text-sm">单文件 Markdown（图片内嵌，便于直接阅读）</span>
+          </label>
+          <label class="ts-option-row">
+            <input v-model="form.exportMode" type="radio" value="html" class="modal-radio" />
+            <span class="ts-body text-sm">单文件网页（图片音频全内嵌，手机电脑双击即看）</span>
           </label>
         </div>
       </div>
@@ -193,7 +201,7 @@ async function startPack() {
 
       <!-- ZIP 文件名 / MD 文件名 -->
       <div class="mb-4">
-        <label class="ts-caption modal-label">{{ form.exportMode === 'md' ? 'Markdown 文件名' : 'ZIP 文件名' }}</label>
+        <label class="ts-caption modal-label">{{ { zip: 'ZIP 文件名', md: 'Markdown 文件名', html: '网页文件名' }[form.exportMode] }}</label>
         <input v-model="form.zipName" class="modal-input" maxlength="50" placeholder="例如：京都秋日漫游_素材包" />
       </div>
 
@@ -207,15 +215,23 @@ async function startPack() {
 ├─ images/
 └─ audio/</pre>
         <p class="ts-caption leading-relaxed mt-1.5">
-          解压后请保持笔记与 images/、audio/ 在同一文件夹内再打开；单独移动 .md 文件会导致图片无法显示。推荐用 Typora、Obsidian、VS Code 预览等阅读器查看。
+          解压后请保持笔记与 images/、audio/ 在同一文件夹内再打开；单独移动 .md 文件会导致图片无法显示。推荐用 Typora、Obsidian、VS Code 预览等阅读器查看。换设备想在应用内查看，可在首页「导入恢复备份」导入 JSON 备份。
         </p>
       </div>
-      <div v-else class="mb-4 ts-preview-box p-3">
+      <div v-else-if="form.exportMode === 'md'" class="mb-4 ts-preview-box p-3">
         <p class="ts-caption flex items-center gap-1.5 mb-1.5">
           <FileText class="w-3.5 h-3.5" />单文件说明
         </p>
         <p class="ts-caption leading-relaxed">
           生成单一 .md 文件，图片以 base64 内嵌、无需其他文件即可携带；推荐用 Typora、Obsidian、VS Code 预览等阅读器打开查看图片（记事本仅显示编码，非文件损坏）。音频素材不包含，需 ZIP 格式导出获取。
+        </p>
+      </div>
+      <div v-else class="mb-4 ts-preview-box p-3">
+        <p class="ts-caption flex items-center gap-1.5 mb-1.5">
+          <FileText class="w-3.5 h-3.5" />单文件网页说明
+        </p>
+        <p class="ts-caption leading-relaxed">
+          生成单一 .html 文件，图片与音频全部内嵌，手机 / 电脑任意浏览器双击打开即可查看，可直接微信发送给朋友。卡片式排版更适合阅读与打印。
         </p>
       </div>
 
@@ -224,7 +240,7 @@ async function startPack() {
       <!-- 统计 -->
       <div class="mb-4 space-y-1.5">
         <div class="flex items-center justify-between">
-          <span class="ts-caption">预计大小{{ form.exportMode === 'md' ? '（base64 内嵌约 +1/3）' : form.imageMode === 'compressed' ? '（压缩估算）' : '' }}</span>
+          <span class="ts-caption">预计大小{{ form.exportMode === 'zip' ? (form.imageMode === 'compressed' ? '（压缩估算）' : '') : '（base64 内嵌约 +1/3）' }}</span>
           <span class="ts-body text-sm font-medium">~{{ formatSize(stats.bytes) }}</span>
         </div>
         <div class="flex items-center justify-between">

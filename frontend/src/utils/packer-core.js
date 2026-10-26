@@ -7,6 +7,7 @@ import JSZip from 'jszip';
 import { sanitizeFilename, extFromMime } from './format';
 import { compressForExport } from './image';
 import { generateTravelNote } from './markdown';
+import { buildStandaloneHtml } from './html-note';
 
 const BIG_PACK_BYTES = 50 * 1024 * 1024; // 超大包提示阈值
 
@@ -162,4 +163,35 @@ export async function packMarkdownCore({ project, materials, imageMode, noteMode
   });
   onProgress?.(95, '正在生成文件');
   return { blob: new Blob([note], { type: 'text/markdown;charset=utf-8' }), note };
+}
+
+/**
+ * 单文件 HTML 核心：图片与音频均以 base64 data URI 内嵌
+ * 任何设备浏览器双击即可查看（含音频播放），返回 { blob }
+ */
+export async function packHtmlCore({ project, materials, imageMode, noteMode, onProgress }) {
+  // 1) 图片转 data URI（遵循压缩选项）
+  const images = materials.filter((m) => m.type === 'image' && m.blob);
+  const imageUris = new Map();
+  for (let i = 0; i < images.length; i++) {
+    const m = images[i];
+    let blob = m.blob;
+    if (imageMode === 'compressed') blob = await compressForExport(blob);
+    imageUris.set(m.id, await toDataUri(blob));
+    onProgress?.(Math.round(((i + 1) / Math.max(images.length, 1)) * 60), '正在内嵌图片');
+  }
+
+  // 2) 音频转 data URI（不压缩，直接内嵌）
+  const audios = materials.filter((m) => m.type === 'audio' && m.blob);
+  const audioUris = new Map();
+  for (let i = 0; i < audios.length; i++) {
+    const m = audios[i];
+    audioUris.set(m.id, await toDataUri(m.blob));
+    onProgress?.(60 + Math.round(((i + 1) / Math.max(audios.length, 1)) * 30), '正在内嵌音频');
+  }
+
+  // 3) 生成单文件 HTML
+  const html = buildStandaloneHtml({ project, materials, noteMode, imageUris, audioUris });
+  onProgress?.(100, '打包完成');
+  return { blob: new Blob([html], { type: 'text/html;charset=utf-8' }) };
 }

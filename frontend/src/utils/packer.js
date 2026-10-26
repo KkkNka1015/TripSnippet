@@ -56,3 +56,17 @@ export async function exportSingleMarkdown({ project, materials, imageMode, note
   downloadBlob(blob, `${sanitizeFilename(zipName || `${project.name}_旅行笔记`, 60)}.md`);
   return blob.size;
 }
+
+/**
+ * 单文件 HTML 导出：图片与音频均内嵌，任何设备浏览器打开即看
+ * 参数与 packAndDownload 一致（zipName 作为 .html 文件名）
+ */
+export async function exportSingleHtml({ project, materials, imageMode, noteMode, zipName, onProgress }) {
+  const { blob } = await runExportWorker(
+    'pack-html',
+    buildPayload({ project, materials, imageMode, noteMode }),
+    onProgress
+  );
+  downloadBlob(blob, `${sanitizeFilename(zipName || `${project.name}_旅行笔记`, 60)}.html`);
+  return blob.size;
+}

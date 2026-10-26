@@ -3,7 +3,7 @@
  * 重活（图片压缩、base64 编码、zip 压缩）在此执行，不卡主线程
  * 由 export-worker-client.js 统一调用，进度经 postMessage 回传
  */
-import { packZipCore, packMarkdownCore } from './packer-core';
+import { packZipCore, packMarkdownCore, packHtmlCore } from './packer-core';
 
 /** Worker 内 blob → base64（无 FileReader，分块转换避免参数栈溢出） */
 async function blobToBase64Worker(blob) {
@@ -44,6 +44,9 @@ self.onmessage = async (e) => {
       post({ type: 'done', result: { blob } });
     } else if (action === 'pack-md') {
       const { blob } = await packMarkdownCore({ ...payload, onProgress });
+      post({ type: 'done', result: { blob } });
+    } else if (action === 'pack-html') {
+      const { blob } = await packHtmlCore({ ...payload, onProgress });
       post({ type: 'done', result: { blob } });
     } else if (action === 'backup-json') {
       const blob = await backupJsonCore({ ...payload, onProgress });
